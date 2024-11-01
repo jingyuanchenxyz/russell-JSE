@@ -57,7 +57,7 @@ def get_returns_data(end_date, lookback_days, p_stocks, conn):
     top_p_stocks = last_day_caps.nlargest(p_stocks, 'DlyCap')['Ticker'].tolist()
     
     Y = Y_full[top_p_stocks].values.astype(float)  # assert float type
-    Y = Y - np.mean(Y, axis=0)  # demean
+    # Y = Y - np.mean(Y, axis=0)  # demean
     
     print(f"final shape (before transpose): {Y.shape}")
     return Y.T  # p x n
@@ -109,37 +109,33 @@ def analyze_decreasing_subsets(Y, num_runs=20):
     return results
 
 def plot_results(results, output_dir):
-    """Results with box plot visualization and enhanced styling"""
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(16, 10), dpi=400)
     
-    # Set style parameters
     plt.rc('text', usetex=True)
     plt.rc('font', **{'family': 'serif', 'serif': ['Times']})
     
-    # Colors from the reference code
     deluge = "#7C71AD"
     yellow = '#FFAC00'
     deluge_a = plt.matplotlib.colors.colorConverter.to_rgba(deluge, alpha=0.50)
     deluge_b = plt.matplotlib.colors.colorConverter.to_rgba(deluge, alpha=0.25)
     
-    # Prepare data for box plot
     data_to_plot = []
-    for p_idx, p_value in enumerate(results['p_values']):
-        # Generate synthetic data points around mean ± 2*std
-        mean = results['mean_eigenvalues'][p_idx]
-        std = results['std_eigenvalues'][p_idx]
-        points = np.random.normal(mean, std, 100)  # Generate 100 points for each p
+    p_values = list(reversed(results['p_values']))
+    
+    for p_idx, p_value in enumerate(p_values):
+        orig_idx = results['p_values'].index(p_value)
+        mean = results['mean_eigenvalues'][orig_idx]
+        std = results['std_eigenvalues'][orig_idx]
+        points = np.random.normal(mean, std, 100) 
         data_to_plot.append(points)
     
-    # Create box plot
     bp = plt.boxplot(data_to_plot, 
                     notch=True,
-                    widths=0.44 * np.ones(len(results['p_values'])),
+                    widths=0.44 * np.ones(len(p_values)),
                     whis=[1, 99],
                     patch_artist=True)
     
-    # Style the box plot elements
-    for i in range(len(results['p_values'])):
+    for i in range(len(p_values)):
         # Boxes
         plt.setp(bp['boxes'][i], linewidth=4,
                 facecolor=deluge_a, edgecolor=deluge_b)
@@ -166,7 +162,6 @@ def plot_results(results, output_dir):
         plt.setp(bp['caps'][2*i+1], color=deluge,
                 linewidth=4, alpha=0.5)
     
-    # Customize axes
     ax = plt.gca()
     ax.yaxis.set_major_formatter(plt.FormatStrFormatter('%.1f'))
     ax.spines['top'].set_visible(False)
@@ -174,24 +169,24 @@ def plot_results(results, output_dir):
     ax.spines['bottom'].set_visible(False)
     ax.spines['left'].set_visible(False)
     
-    # Labels and ticks
-    plt.xlabel('Number of Stocks (p)', fontsize=20)
-    plt.ylabel('Largest Eigenvalue', fontsize=20)
-    plt.xticks(range(1, len(results['p_values']) + 1),
-               [str(int(p)) for p in results['p_values']],
-               fontsize=20)
+    plt.xlabel('Number of Stocks (p)', fontsize=24)
+    plt.ylabel('Largest Eigenvalue', fontsize=24)
+    plt.xticks(range(1, len(p_values) + 1),
+               [str(int(p)) for p in p_values],
+               fontsize=20, rotation=0)
     plt.yticks(fontsize=20)
     
-    # Add title with parameters
-    title = f"n={results['p_values'][0]}, runs={len(data_to_plot[0])}\n"
-    plt.title(title, fontsize=16)
+    title = f"n={min(p_values)}, runs={len(data_to_plot[0])}\n"
+    plt.title(title, fontsize=20, pad=20)
     
     plt.tight_layout()
     
-    # Save the plot
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     plt.savefig(os.path.join(output_dir, f'eigenvalue_analysis_{timestamp}.png'),
-                transparent=True)
+                transparent=True,
+                dpi=300,  
+                bbox_inches='tight', 
+                pad_inches=0.1)  
     plt.close()
     
 def main():
