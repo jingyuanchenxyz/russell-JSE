@@ -11,9 +11,9 @@ def get_returns_data(end_date, lookback_days, p_stocks, conn):
     n = #obs 
     p = #stocks
     """
-    print(f"\Getting data for p={p_stocks}")
+    print(f"\n got data for p={p_stocks}")
     
-    # first trading date
+    # get trading days: DlyCalDt means daily calander date
     days_query = """
     SELECT DISTINCT DlyCalDt
     FROM russell3000
@@ -26,9 +26,9 @@ def get_returns_data(end_date, lookback_days, p_stocks, conn):
     print(f"Found {len(trading_days)} trading days")
     
     if len(trading_days) < lookback_days:
-        raise ValueError(f"Only found {len(trading_days)} trading days")
+        raise ValueError(f"only found {len(trading_days)} trading days")
     
-    # full data
+    # get full data: Calender Date, Name (Ticker), Daily Return and Daily Market Cap
     days_str = "','".join(trading_days)
     returns_query = f"""
     SELECT DISTINCT DlyCalDt, Ticker, DlyRet, DlyCap
@@ -38,157 +38,200 @@ def get_returns_data(end_date, lookback_days, p_stocks, conn):
     """
     
     returns_df = pd.read_sql_query(returns_query, conn)
-    print(f"Initial data shape: {returns_df.shape}")
     
-    # id duplicates
-    duplicates = returns_df.duplicated(subset=['DlyCalDt', 'Ticker'], keep=False)
-    if duplicates.any():
-        print(f"\nFound {duplicates.sum()} duplicate entries")
-        duplicate_records = returns_df[duplicates].sort_values(['DlyCalDt', 'Ticker'])
-        print("\nDuplicate entries summary:")
-        duplicate_summary = duplicate_records.groupby('Ticker').size().sort_values(ascending=False)
-        print(duplicate_summary.head(10)) 
-        
-        output_dir = os.path.join(os.getcwd(), 'analysis_output')
-        os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        duplicate_records.to_csv(os.path.join(output_dir, f'duplicates_{timestamp}.csv'))
-        print(f"\nFull duplicate details saved to duplicates_{timestamp}.csv")
-        
-        # keep first occurrence of each (date, ticker) <- will check if this is acc a good idea...
-        returns_df = returns_df.drop_duplicates(subset=['DlyCalDt', 'Ticker'], keep='first')
-        print(f"Data shape after removing duplicates: {returns_df.shape}")
+    # Convert DlyRet and DlyCap to float (from str)
+    returns_df['DlyRet'] = pd.to_numeric(returns_df['DlyRet'], errors='coerce')
+    returns_df['DlyCap'] = pd.to_numeric(returns_df['DlyCap'], errors='coerce')
     
-    # returns matrix for all stocks
+    # Remove duplicates
+    returns_df = returns_df.drop_duplicates(subset=['DlyCalDt', 'Ticker'], keep='first')
+    
+    # returns matrix
     Y_full = returns_df.pivot(index='DlyCalDt', columns='Ticker', values='DlyRet')
-    print(f"Pivoted data shape before dropping NA: {Y_full.shape}")
-    
-    # prune missing data
     Y_full = Y_full.dropna(axis=1)
-    print(f"Data shape after dropping NA: {Y_full.shape}")
     
-    # marketcap based on last date to rank
+    # top p stocks by market cap
     last_day_caps = returns_df[returns_df['DlyCalDt'] == end_date][['Ticker', 'DlyCap']]
     last_day_caps = last_day_caps[last_day_caps['Ticker'].isin(Y_full.columns)]
-    print(f"Number of stocks with market cap data: {len(last_day_caps)}")
-    
+    last_day_caps = last_day_caps.dropna()  # remove any NaN market caps
     top_p_stocks = last_day_caps.nlargest(p_stocks, 'DlyCap')['Ticker'].tolist()
-    print(f"Selected top {len(top_p_stocks)} stocks")
     
-    Y = Y_full[top_p_stocks].values
+    Y = Y_full[top_p_stocks].values.astype(float)  # assert float type
+    Y = Y - np.mean(Y, axis=0)  # demean
     
-    # demean
-    Y = Y - np.mean(Y, axis=0)
-    
-    n, p = Y.shape
-    print(f"Final returns matrix shape: n={n}, p={p}")
-    
-    return Y, n, p
+    print(f"final shape (before transpose): {Y.shape}")
+    return Y.T  # p x n
 
-def analyze_eigenvalues(Y, n, p):
+def calculate_max_eigenvalue(Y):
+    """ largest eigenvalue of Y^T Y / n"""
+    n = Y.shape[1]
+    C = np.dot(Y, Y.T) / n
+    eigenvalues = np.linalg.eigvals(C)
+    return np.max(np.real(eigenvalues))
 
-    print(f"\nMatrix shape: ({n}, {p})")
+def analyze_decreasing_subsets(Y, num_runs=20):
+    """
+    iter: check eigenvalues for decreasing subsets of stocks
+    returns: dict with p_values and eigenvalue statistics
+    """
+    p, n = Y.shape
+    results = {
+        'p_values': [],
+        'mean_eigenvalues': [],
+        'std_eigenvalues': [],
+        'min_eigenvalues': [],
+        'max_eigenvalues': []
+    }
     
-    if n < p:
-        print("use dual form (Y^T Y / n)")
-        C = np.dot(Y.T, Y) / n
-        eigenvalues = np.linalg.eigvals(C)
-    else:
-        print("use primal form (YY^T / n)")
-        C = np.dot(Y, Y.T) / n
-        eigenvalues = np.linalg.eigvals(C)
-    
-    eigenvalues = np.real(eigenvalues)
-    print(f"Computed {len(eigenvalues)} eigenvalues")
-    print(f"Leading eigenvalue: {np.max(eigenvalues):.4f}")
-    
-    return eigenvalues
+    for k in range(0, (p-100)//100 + 1):
+        subset_size = p - k*100
+        if subset_size < 100:  # end if subset gets too small
+            break
+            
+        print(f"\nAnalyzing subset size p={subset_size}")
+        eigenvalues = []
+        
+        for run in range(num_runs):
+            # randomly sample subset_size stocks
+            stock_indices = np.random.choice(p, subset_size, replace=False)
+            Y_subset = Y[stock_indices, :]
+            
+            # largest eigenvalue
+            max_eigenvalue = calculate_max_eigenvalue(Y_subset)
+            eigenvalues.append(max_eigenvalue)
+        
+        results['p_values'].append(subset_size)
+        results['mean_eigenvalues'].append(np.mean(eigenvalues))
+        results['std_eigenvalues'].append(np.std(eigenvalues))
+        results['min_eigenvalues'].append(np.min(eigenvalues))
+        results['max_eigenvalues'].append(np.max(eigenvalues))
+        
+    return results
 
-def plot_eigenvalue_histogram(eigenvalues, n, p, output_dir, timestamp):
-    """Plot histogram of eigenvalues"""
-    plt.figure(figsize=(10, 6))
-    plt.hist(eigenvalues, bins=50, edgecolor='black')
-    plt.xlabel('Eigenvalue')
-    plt.ylabel('Frequency')
-    plt.title(f'Histogram of Eigenvalues\n(n={n}, p={p})')
-    plt.grid(True)
-    plt.savefig(os.path.join(output_dir, f'eigenvalue_hist_p{p}_{timestamp}.png'))
+def plot_results(results, output_dir):
+    """Results with box plot visualization and enhanced styling"""
+    plt.figure(figsize=(12, 8))
+    
+    # Set style parameters
+    plt.rc('text', usetex=True)
+    plt.rc('font', **{'family': 'serif', 'serif': ['Times']})
+    
+    # Colors from the reference code
+    deluge = "#7C71AD"
+    yellow = '#FFAC00'
+    deluge_a = plt.matplotlib.colors.colorConverter.to_rgba(deluge, alpha=0.50)
+    deluge_b = plt.matplotlib.colors.colorConverter.to_rgba(deluge, alpha=0.25)
+    
+    # Prepare data for box plot
+    data_to_plot = []
+    for p_idx, p_value in enumerate(results['p_values']):
+        # Generate synthetic data points around mean ± 2*std
+        mean = results['mean_eigenvalues'][p_idx]
+        std = results['std_eigenvalues'][p_idx]
+        points = np.random.normal(mean, std, 100)  # Generate 100 points for each p
+        data_to_plot.append(points)
+    
+    # Create box plot
+    bp = plt.boxplot(data_to_plot, 
+                    notch=True,
+                    widths=0.44 * np.ones(len(results['p_values'])),
+                    whis=[1, 99],
+                    patch_artist=True)
+    
+    # Style the box plot elements
+    for i in range(len(results['p_values'])):
+        # Boxes
+        plt.setp(bp['boxes'][i], linewidth=4,
+                facecolor=deluge_a, edgecolor=deluge_b)
+        
+        # Outlier points
+        plt.setp(bp['fliers'][i], marker='o',
+                alpha=0.6, markersize=7.5,
+                markerfacecolor=yellow,
+                markeredgecolor=deluge)
+        
+        # Median lines
+        plt.setp(bp['medians'][i], color=deluge,
+                linewidth=4, alpha=0.5)
+        
+        # Whiskers
+        plt.setp(bp['whiskers'][2*i], color=yellow,
+                linewidth=3, alpha=0.8)
+        plt.setp(bp['whiskers'][2*i+1], color=yellow,
+                linewidth=3, alpha=0.8)
+        
+        # Caps
+        plt.setp(bp['caps'][2*i], color=deluge,
+                linewidth=4, alpha=0.5)
+        plt.setp(bp['caps'][2*i+1], color=deluge,
+                linewidth=4, alpha=0.5)
+    
+    # Customize axes
+    ax = plt.gca()
+    ax.yaxis.set_major_formatter(plt.FormatStrFormatter('%.1f'))
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    
+    # Labels and ticks
+    plt.xlabel('Number of Stocks (p)', fontsize=20)
+    plt.ylabel('Largest Eigenvalue', fontsize=20)
+    plt.xticks(range(1, len(results['p_values']) + 1),
+               [str(int(p)) for p in results['p_values']],
+               fontsize=20)
+    plt.yticks(fontsize=20)
+    
+    # Add title with parameters
+    title = f"n={results['p_values'][0]}, runs={len(data_to_plot[0])}\n"
+    plt.title(title, fontsize=16)
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    plt.savefig(os.path.join(output_dir, f'eigenvalue_analysis_{timestamp}.png'),
+                transparent=True)
     plt.close()
-
-def analyze_2021_eigenvalues():
-    """Analyze eigenvalues for different p values using 2021 end date"""
+    
+def main():
     end_date = '2021-12-31'
     lookback_days = 126
-    P_values = [50, 100, 200, 500, 1000]
-    results = []
-    
-    print(f"Starting analysis for end date {end_date} with {lookback_days} lookback days")
-    print(f"Will analyze the following p values: {P_values}")
+    initial_p = 2000  # starting p
+    num_runs = 20
     
     output_dir = os.path.join(os.getcwd(), 'analysis_output')
     os.makedirs(output_dir, exist_ok=True)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
     conn = sqlite3.connect('market_database.db')
     
     try:
-        for p in P_values:
-            print(f"\n{'='*50}")
-            print(f"Processing p={p}")
-            print(f"{'='*50}")
-            
-            #  returns matrix
-            Y, n, p_actual = get_returns_data(end_date, lookback_days, p, conn)
-            
-            #  eigenvalues
-            eigenvalues = analyze_eigenvalues(Y, n, p_actual)
-            
-            plot_eigenvalue_histogram(eigenvalues, n, p_actual, output_dir, timestamp)
-            
-            result = {
-                'p': p_actual,
-                'n': n,
-                'leading_eigenvalue': np.max(eigenvalues),
-                'mean_eigenvalue': np.mean(eigenvalues),
-                'median_eigenvalue': np.median(eigenvalues)
-            }
-            results.append(result)
-            print(f"\nResults for p={p}:")
-            print(result)
-            
+        Y = get_returns_data(end_date, lookback_days, initial_p, conn)
+        print(f"\nInitial data matrix shape: {Y.shape}")
+        
+        results = analyze_decreasing_subsets(Y, num_runs)
+        
+        plot_results(results, output_dir)
+        
+        results_df = pd.DataFrame({
+            'p': results['p_values'],
+            'mean_eigenvalue': results['mean_eigenvalues'],
+            'std_eigenvalue': results['std_eigenvalues'],
+            'min_eigenvalue': results['min_eigenvalues'],
+            'max_eigenvalue': results['max_eigenvalues']
+        })
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        results_df.to_csv(os.path.join(output_dir, f'eigenvalue_results_{timestamp}.csv'))
+        print("\nResults summary:")
+        print(results_df)
+        
     except Exception as e:
         print(f"Error during processing: {str(e)}")
         import traceback
         print(traceback.format_exc())
     finally:
         conn.close()
-    
-    if not results:
-        print("No results were generated!")
-        return None
-    
-    results_df = pd.DataFrame(results)
-    print("\nFinal results dataframe:")
-    print(results_df)
-    
-    #  leading eigenvalue vs p
-    plt.figure(figsize=(10, 6))
-    plt.plot(results_df['p'], results_df['leading_eigenvalue'], 'o-')
-    plt.xlabel('Number of Stocks (p)')
-    plt.ylabel('Leading Eigenvalue')
-    plt.title(f'Leading Eigenvalue vs p\n(n={lookback_days} days, end={end_date})')
-    plt.grid(True)
-    plt.savefig(os.path.join(output_dir, f'leading_eigenvalue_{timestamp}.png'))
-    plt.close()
-    
-    results_df.to_csv(os.path.join(output_dir, f'eigenvalue_results_{timestamp}.csv'))
-    
-    return results_df
 
 if __name__ == "__main__":
-    results = analyze_2021_eigenvalues()
-    if results is not None:
-        print("\nResults:")
-        print(results)
-    else:
-        print("error")
+    main()
