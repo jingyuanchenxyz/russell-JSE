@@ -1,7 +1,8 @@
-streamlit==1.40.2
-pandas==2.2.3
-numpy==2.0.2
-matplotlib==3.9.2
-datetime==4.3
+pandas == 1.5.3
+numpy==1.24.2
+streamlit==1.27.2
+streamlit_option_menu == 0.3.6
+category_encoders==2.6.2
+matplotlib==3.7.1
 seaborn==0.12.2
-sqlite3
+plotly==5.14.1
