@@ -1,7 +1,7 @@
-streamlit
-pandas
-numpy
-matplotlib
-datetime
-seaborn
+streamlit==1.40.2
+pandas==2.2.3
+numpy==2.0.2
+matplotlib==3.9.2
+datetime==4.3
+seaborn==0.12.2
 sqlite3
