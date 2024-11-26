@@ -170,7 +170,7 @@ def main():
     st.title("Market Cap Ranked Eigenvector Analysis")
     
     # Define the Parquet file path
-    parquet_path = 'r3000hist.parquet'
+    parquet_path = '/Users/jingyuanchen/Desktop/russell-JSE/r3000hist.parquet'
     
     # Check if the Parquet file exists
     if not os.path.exists(parquet_path):
