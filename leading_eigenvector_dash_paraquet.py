@@ -25,7 +25,7 @@ def load_parquet(file_path):
     return pd.read_parquet(file_path)
 
 class MarketCapAnalyzer:
-    def __init__(self, parquet_path="/Users/jingyuanchen/Desktop/russell-JSE/r3000hist.parquet"):
+    def __init__(self, parquet_path="r3000hist.parquet"):
         """
         Initializes the MarketCapAnalyzer with the path to the Parquet file.
         
@@ -170,7 +170,7 @@ def main():
     st.title("Market Cap Ranked Eigenvector Analysis")
     
     # Define the Parquet file path
-    parquet_path = '/Users/jingyuanchen/Desktop/russell-JSE/r3000hist.parquet'
+    parquet_path = 'r3000hist.parquet'
     
     # Check if the Parquet file exists
     if not os.path.exists(parquet_path):
