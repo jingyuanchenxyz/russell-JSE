@@ -25,7 +25,7 @@ def load_parquet(file_path):
     return pd.read_parquet(file_path)
 
 class MarketCapAnalyzer:
-    def __init__(self, parquet_path='r3000hist.parquet'):
+    def __init__(self, parquet_path="r3000hist.parquet"):
         """
         Initializes the MarketCapAnalyzer with the path to the Parquet file.
         
