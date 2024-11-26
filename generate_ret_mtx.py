@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 data_dict = {}
 cnt = 0
-with open('dataset.csv', mode='r', encoding='utf-8') as file:
+with open('/Users/jingyuanchen/Desktop/russell-JSE/wrds_export/r3000hist.csv', mode='r', encoding='utf-8') as file:
     reader = csv.DictReader(file)
     for row in reader:
         if not row['DlyCalDt'] or not row['PERMNO'] or not row['DlyCap'] or not row['DlyRet']:
