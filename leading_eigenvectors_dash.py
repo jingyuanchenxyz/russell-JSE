@@ -7,9 +7,7 @@ import seaborn as sns
 import sqlite3
 import time
 from scipy import stats
-from scipy import stats
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
+
 
 # Create indices if they don't exist
 @st.cache_resource  # This ensures we only try to create indices once per session
@@ -27,23 +25,19 @@ plt.ioff()
 class MarketCapAnalyzer:
     def __init__(self, database_path='market_database.db'):
         self.db_path = database_path
+        # Create indices when initializing
+        create_indices(self.db_path)
         self.dates = None
-        self.load_dates()
+        self._load_dates()
     
-    @staticmethod
-    @st.cache_data  
-    def _load_dates_cached(db_path):  # Changed name to avoid conflict
+    @st.cache_data  # Cache the dates query
+    def _load_dates(self):
         """Load available dates from database with caching"""
-        with sqlite3.connect(db_path) as conn:
-            dates = pd.read_sql_query(
+        with sqlite3.connect(self.db_path) as conn:
+            self.dates = pd.read_sql_query(
                 "SELECT DISTINCT DlyCalDt FROM russell3000 ORDER BY DlyCalDt",
                 conn
             )['DlyCalDt'].tolist()
-        return dates
-    
-    def load_dates(self):  # Changed name to avoid conflict
-        """Instance method to load dates"""
-        self.dates = self._load_dates_cached(self.db_path)
     
     @staticmethod
     @lru_cache(maxsize=32)  # Cache eigenvector stats calculations
