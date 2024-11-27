@@ -1,29 +1,28 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime
 import seaborn as sns
 import time
 from scipy import stats
 import requests
 from io import BytesIO
+import matplotlib.pyplot as plt
 
-# Add this at the top of your script
-st.set_page_config(page_title="Market Cap Analysis")
 
-@st.cache_data
+# Improve caching with proper hash funcs
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_parquet_from_github():
-    """
-    Loads a Parquet file from GitHub into a pandas DataFrame using Streamlit's built-in GitHub integration.
-    """
-    # Direct GitHub raw content URL
     url = "https://github.com/jingyuanchenxyz/russell-JSE/raw/main/r3000hist.parquet"
-    
     try:
-        response = requests.get(url, timeout=15)  # Add timeout to prevent hanging
+        response = requests.get(url, timeout=15)
         if response.status_code == 200:
-            return pd.read_parquet(BytesIO(response.content))
+            df = pd.read_parquet(BytesIO(response.content))
+            # Ensure data types are correct immediately after loading
+            df['DlyCalDt'] = pd.to_datetime(df['DlyCalDt'])
+            df['DlyRet'] = pd.to_numeric(df['DlyRet'], errors='coerce')
+            df['DlyCap'] = pd.to_numeric(df['DlyCap'], errors='coerce')
+            return df
         else:
             st.error(f"Failed to load data: HTTP {response.status_code}")
             return None
@@ -33,12 +32,15 @@ def load_parquet_from_github():
 
 class MarketCapAnalyzer:
     def __init__(self):
-        """
-        Initializes the MarketCapAnalyzer.
-        """
         self.dates = None
         self._load_dates()
     
+    def _load_dates(self):
+        df = load_parquet_from_github()
+        if df is not None:
+            self.dates = df['DlyCalDt'].dt.strftime('%Y-%m-%d').unique().tolist()
+            self.dates.sort()
+
     def _load_dates(self):
         """
         Loads and sorts the available dates from the Parquet file.
@@ -72,55 +74,42 @@ class MarketCapAnalyzer:
         return pd.DataFrame(stats_data)
             
     def get_window_data(self, end_date, lookback_days):
-        """
-        Retrieves the returns matrix for market cap-ranked stocks.
-        """
-        # Load data from GitHub
-        df = load_parquet_from_github()
-        if df is None:
+        try:
+            df = load_parquet_from_github()
+            if df is None:
+                return None, None, None
+            
+            end_date_dt = pd.to_datetime(end_date)
+            df_filtered = df[df['DlyCalDt'] <= end_date_dt].copy()
+            
+            # Get last N trading days efficiently
+            trading_days = df_filtered['DlyCalDt'].drop_duplicates().nlargest(lookback_days)
+            if len(trading_days) < lookback_days:
+                return None, None, None
+            
+            # Memory efficient filtering
+            returns_df = df_filtered[df_filtered['DlyCalDt'].isin(trading_days)]
+            returns_df = returns_df.drop_duplicates(subset=['DlyCalDt', 'Ticker'])
+            
+            # Efficient pivoting with error handling
+            Y_full = returns_df.pivot(index='DlyCalDt', columns='Ticker', values='DlyRet')
+            Y_full = Y_full.dropna(axis=1)  # Remove columns with any NaN
+            
+            last_day_caps = returns_df[
+                returns_df['DlyCalDt'] == end_date_dt
+            ][['Ticker', 'DlyCap']].dropna()
+            
+            last_day_caps = last_day_caps[last_day_caps['Ticker'].isin(Y_full.columns)]
+            sorted_stocks = last_day_caps.sort_values('DlyCap', ascending=False)
+            
+            Y = Y_full[sorted_stocks['Ticker']].values.astype(np.float32)  # Use float32 for memory
+            Y = Y - np.mean(Y, axis=0)
+            
+            return Y.T, sorted_stocks, Y_full.columns.tolist()
+            
+        except Exception as e:
+            st.error(f"Error in get_window_data: {str(e)}")
             return None, None, None
-        
-        # Ensure 'DlyCalDt' is datetime
-        if not pd.api.types.is_datetime64_any_dtype(df['DlyCalDt']):
-            df['DlyCalDt'] = pd.to_datetime(df['DlyCalDt'], errors='coerce')
-        
-        # Filter rows up to the end_date
-        end_date_dt = pd.to_datetime(end_date, errors='coerce')
-        df_filtered = df[df['DlyCalDt'] <= end_date_dt].copy()
-        
-        # Get the latest 'lookback_days' trading days
-        trading_days = df_filtered['DlyCalDt'].drop_duplicates().nlargest(lookback_days).tolist()
-        
-        if len(trading_days) < lookback_days:
-            return None, None, None
-        
-        # Filter the DataFrame for the selected trading days
-        returns_df = df_filtered[df_filtered['DlyCalDt'].isin(trading_days)]
-        
-        # Ensure numeric columns are correctly typed
-        returns_df['DlyRet'] = pd.to_numeric(returns_df['DlyRet'], errors='coerce')
-        returns_df['DlyCap'] = pd.to_numeric(returns_df['DlyCap'], errors='coerce')
-        
-        # Drop duplicates
-        returns_df = returns_df.drop_duplicates(subset=['DlyCalDt', 'Ticker'], keep='first')
-        
-        # Pivot the DataFrame to create a matrix of returns
-        Y_full = returns_df.pivot(index='DlyCalDt', columns='Ticker', values='DlyRet')
-        Y_full = Y_full.dropna(axis=1)
-        
-        # Get market caps on the last day
-        last_day_caps = returns_df[returns_df['DlyCalDt'] == end_date_dt][['Ticker', 'DlyCap']]
-        last_day_caps = last_day_caps[last_day_caps['Ticker'].isin(Y_full.columns)]
-        last_day_caps = last_day_caps.dropna()
-        
-        # Sort stocks by market cap in descending order
-        sorted_stocks = last_day_caps.sort_values('DlyCap', ascending=False)
-        
-        # Create the returns matrix
-        Y = Y_full[sorted_stocks['Ticker']].values.astype(float)
-        Y = Y - np.mean(Y, axis=0)  # Demean the returns
-        
-        return Y.T, sorted_stocks, Y_full.columns.tolist()
             
     def analyze_market_cap_ranked(self, Y, market_caps, num_stocks):
         """
@@ -137,13 +126,18 @@ class MarketCapAnalyzer:
     
     @staticmethod
     def compute_eigen(Y, top_k=4):
-        """
-        Computes eigendecomposition using Singular Value Decomposition (SVD).
-        """
-        n = Y.shape[1]
-        U, S, Vh = np.linalg.svd(Y, full_matrices=False)
-        eigenvalues = (S**2) / n
-        return eigenvalues[:top_k], U[:, :top_k]
+        try:
+            n = Y.shape[1]
+            # Use more efficient SVD computation
+            U, S, Vh = np.linalg.svd(Y, full_matrices=False, compute_uv=True)
+            eigenvalues = (S**2) / n
+            return eigenvalues[:top_k], U[:, :top_k]
+        except np.linalg.LinAlgError:
+            st.error("SVD computation failed. Data might be singular.")
+            return None, None
+        except Exception as e:
+            st.error(f"Error in compute_eigen: {str(e)}")
+            return None, None
 
 def main():
     st.title("Market Cap Ranked Eigenvector Analysis")
