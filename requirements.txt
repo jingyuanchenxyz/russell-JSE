@@ -6,3 +6,6 @@ category_encoders>=2.6.2
 matplotlib>=3.7.1
 seaborn>=0.12.2
 plotly>=5.14.1
+scipy>=1.0.0
+requests>=1.0.0
+pyarrow>=1.0.0

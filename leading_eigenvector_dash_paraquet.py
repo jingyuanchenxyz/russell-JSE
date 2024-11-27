@@ -6,33 +6,36 @@ from datetime import datetime
 import seaborn as sns
 import time
 from scipy import stats
-import os
+import requests
+from io import BytesIO
 
-# Enable matplotlib's interactive mode for Streamlit
-plt.ioff()
+# Add this at the top of your script
+st.set_page_config(page_title="Market Cap Analysis")
 
 @st.cache_data
-def load_parquet(file_path):
+def load_parquet_from_github():
     """
-    Loads a Parquet file into a pandas DataFrame.
-    
-    Parameters:
-    - file_path (str): Path to the Parquet file.
-    
-    Returns:
-    - pd.DataFrame: Loaded DataFrame.
+    Loads a Parquet file from GitHub into a pandas DataFrame using Streamlit's built-in GitHub integration.
     """
-    return pd.read_parquet(file_path)
+    # Direct GitHub raw content URL
+    url = "https://github.com/jingyuanchenxyz/russell-JSE/raw/main/r3000hist.parquet"
+    
+    try:
+        response = requests.get(url, timeout=15)  # Add timeout to prevent hanging
+        if response.status_code == 200:
+            return pd.read_parquet(BytesIO(response.content))
+        else:
+            st.error(f"Failed to load data: HTTP {response.status_code}")
+            return None
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return None
 
 class MarketCapAnalyzer:
-    def __init__(self, parquet_path="r3000hist.parquet"):
+    def __init__(self):
         """
-        Initializes the MarketCapAnalyzer with the path to the Parquet file.
-        
-        Parameters:
-        - parquet_path (str): Path to the Parquet file.
+        Initializes the MarketCapAnalyzer.
         """
-        self.parquet_path = parquet_path
         self.dates = None
         self._load_dates()
     
@@ -40,22 +43,18 @@ class MarketCapAnalyzer:
         """
         Loads and sorts the available dates from the Parquet file.
         """
-        df_dates = load_parquet(self.parquet_path)[['DlyCalDt']]
-        # Ensure 'DlyCalDt' is datetime
-        if not pd.api.types.is_datetime64_any_dtype(df_dates['DlyCalDt']):
-            df_dates['DlyCalDt'] = pd.to_datetime(df_dates['DlyCalDt'], errors='coerce')
-        self.dates = df_dates['DlyCalDt'].dt.strftime('%Y-%m-%d').unique().tolist()
-        self.dates.sort()
+        df = load_parquet_from_github()
+        if df is not None:
+            df_dates = df[['DlyCalDt']]
+            # Ensure 'DlyCalDt' is datetime
+            if not pd.api.types.is_datetime64_any_dtype(df_dates['DlyCalDt']):
+                df_dates['DlyCalDt'] = pd.to_datetime(df_dates['DlyCalDt'], errors='coerce')
+            self.dates = df_dates['DlyCalDt'].dt.strftime('%Y-%m-%d').unique().tolist()
+            self.dates.sort()
     
     def compute_eigenvector_stats(self, eigenvectors):
         """
         Computes statistical moments for each eigenvector.
-        
-        Parameters:
-        - eigenvectors (np.ndarray): Array of eigenvectors.
-        
-        Returns:
-        - pd.DataFrame: DataFrame containing statistical metrics.
         """
         stats_data = []
         for i in range(eigenvectors.shape[1]):
@@ -75,16 +74,11 @@ class MarketCapAnalyzer:
     def get_window_data(self, end_date, lookback_days):
         """
         Retrieves the returns matrix for market cap-ranked stocks.
-        
-        Parameters:
-        - end_date (str): The end date in 'YYYY-MM-DD' format.
-        - lookback_days (int): Number of trading days to look back.
-        
-        Returns:
-        - tuple: (Y matrix, sorted_stocks DataFrame, list of all stock tickers)
         """
-        # Load the entire Parquet file
-        df = load_parquet(self.parquet_path)
+        # Load data from GitHub
+        df = load_parquet_from_github()
+        if df is None:
+            return None, None, None
         
         # Ensure 'DlyCalDt' is datetime
         if not pd.api.types.is_datetime64_any_dtype(df['DlyCalDt']):
@@ -112,7 +106,7 @@ class MarketCapAnalyzer:
         
         # Pivot the DataFrame to create a matrix of returns
         Y_full = returns_df.pivot(index='DlyCalDt', columns='Ticker', values='DlyRet')
-        Y_full = Y_full.dropna(axis=1)  # Drop columns with any NaN values
+        Y_full = Y_full.dropna(axis=1)
         
         # Get market caps on the last day
         last_day_caps = returns_df[returns_df['DlyCalDt'] == end_date_dt][['Ticker', 'DlyCap']]
@@ -131,14 +125,6 @@ class MarketCapAnalyzer:
     def analyze_market_cap_ranked(self, Y, market_caps, num_stocks):
         """
         Analyzes stocks ranked by market cap by computing eigenvalues and eigenvectors.
-        
-        Parameters:
-        - Y (np.ndarray): Returns matrix.
-        - market_caps (pd.DataFrame): DataFrame containing market caps.
-        - num_stocks (int): Number of top stocks to analyze.
-        
-        Returns:
-        - tuple: (eigenvalues, eigenvectors)
         """
         Y_subset = Y[:num_stocks, :]
         eigenvalues, eigenvectors = self.compute_eigen(Y_subset)
@@ -153,13 +139,6 @@ class MarketCapAnalyzer:
     def compute_eigen(Y, top_k=4):
         """
         Computes eigendecomposition using Singular Value Decomposition (SVD).
-        
-        Parameters:
-        - Y (np.ndarray): Returns matrix.
-        - top_k (int): Number of top eigenvalues and eigenvectors to return.
-        
-        Returns:
-        - tuple: (eigenvalues, eigenvectors)
         """
         n = Y.shape[1]
         U, S, Vh = np.linalg.svd(Y, full_matrices=False)
@@ -169,15 +148,7 @@ class MarketCapAnalyzer:
 def main():
     st.title("Market Cap Ranked Eigenvector Analysis")
     
-    # Define the Parquet file path
-    parquet_path = '/Users/jingyuanchen/Desktop/russell-JSE/r3000hist.parquet'
-    
-    # Check if the Parquet file exists
-    if not os.path.exists(parquet_path):
-        st.error(f"Parquet file not found at path: {parquet_path}")
-        return
-    
-    analyzer = MarketCapAnalyzer(parquet_path=parquet_path)
+    analyzer = MarketCapAnalyzer()
     
     try:
         if not analyzer.dates:
