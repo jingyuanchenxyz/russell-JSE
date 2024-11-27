@@ -2,42 +2,59 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
+from datetime import datetime
 import seaborn as sns
 import sqlite3
 import time
 from scipy import stats
+from scipy import stats
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+
+# Create indices if they don't exist
+@st.cache_resource  # This ensures we only try to create indices once per session
+def create_indices(db_path):
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dlycaldt ON russell3000(DlyCalDt)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dlycaldt_ticker ON russell3000(DlyCalDt, Ticker)")
+            print("Database indices checked/created successfully")
+    except Exception as e:
+        print(f"Warning: Could not create indices: {e}")
+
+plt.ioff()
 
 class MarketCapAnalyzer:
     def __init__(self, database_path='market_database.db'):
         self.db_path = database_path
+        # Create indices when initializing
+        create_indices(self.db_path)
         self.dates = None
         self._load_dates()
     
+    @st.cache_data  # Cache the dates query
     def _load_dates(self):
-        """Load available dates from database"""
+        """Load available dates from database with caching"""
         with sqlite3.connect(self.db_path) as conn:
             self.dates = pd.read_sql_query(
                 "SELECT DISTINCT DlyCalDt FROM russell3000 ORDER BY DlyCalDt",
                 conn
             )['DlyCalDt'].tolist()
     
-    def compute_eigenvector_stats(self, eigenvectors):
-        """Compute statistical moments for eigenvectors"""
-        stats_data = []
-        for i in range(eigenvectors.shape[1]):
-            evec = eigenvectors[:, i]
-            stats_data.append({
-                'Eigenvector': f'EV{i+1}',
-                'Mean': np.mean(evec),
-                'Std': np.std(evec),
-                'Skewness': stats.skew(evec),
-                'Kurtosis': stats.kurtosis(evec),
-                'Min': np.min(evec),
-                'Max': np.max(evec),
-                'Median': np.median(evec)
-            })
-        return pd.DataFrame(stats_data)
+    @staticmethod
+    @lru_cache(maxsize=32)  # Cache eigenvector stats calculations
+    def compute_eigenvector_stats_cached(eigenvector_tuple):
+        """Cached version of statistical computations"""
+        evec = np.array(eigenvector_tuple)
+        return {
+            'Mean': np.mean(evec),
+            'Std': np.std(evec),
+            'Skewness': stats.skew(evec),
+            'Kurtosis': stats.kurtosis(evec),
+            'Min': np.min(evec),
+            'Max': np.max(evec),
+            'Median': np.median(evec)
+        }
             
     def get_window_data(self, end_date, lookback_days):
         """Get returns matrix for market cap ranked stocks"""
@@ -89,10 +106,9 @@ class MarketCapAnalyzer:
         """Analyze stocks ranked by market cap"""
         Y_subset = Y[:num_stocks, :]
         eigenvalues, eigenvectors = self.compute_eigen(Y_subset)
-        normalized_eigenvectors = np.array([
-            evec / np.mean(evec) for evec in eigenvectors.T
-        ]).T
-        return eigenvalues, normalized_eigenvectors
+        # Remove normalization
+        return eigenvalues, eigenvectors
+
     
     @staticmethod
     def compute_eigen(Y, top_k=4):
@@ -179,7 +195,7 @@ def main():
                         
                         sns.histplot(
                             all_eigenvalues,
-                            bins=50,
+                            bins=500,
                             ax=ax,
                             stat='density',
                             kde=True,
@@ -204,59 +220,31 @@ def main():
                         plt.close()
                     
                     with col4:
-                        st.subheader("Top 4 Eigenvalues")
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        ax.bar(range(len(eigenvalues)), eigenvalues)
-                        ax.set_xticks(range(len(eigenvalues)))
-                        ax.set_xticklabels([f'λ{i+1}' for i in range(len(eigenvalues))])
-                        ax.set_ylabel('Eigenvalue')
-                        ax.grid(True)
+                        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+                        axes = axes.ravel()
                         
-                        for i, v in enumerate(eigenvalues):
-                            ax.text(i, v, f'{v:.3f}', ha='center', va='bottom')
-                        
-                        st.pyplot(fig)
-                        plt.close()
-                    
-                    st.subheader("Eigenvector Statistics")
-                    stats_df = analyzer.compute_eigenvector_stats(eigenvectors)
-                    formatted_stats = stats_df.style.format({
-                        'Mean': '{:.3f}',
-                        'Std': '{:.3f}',
-                        'Skewness': '{:.3f}',
-                        'Kurtosis': '{:.3f}',
-                        'Min': '{:.3f}',
-                        'Max': '{:.3f}',
-                        'Median': '{:.3f}'
-                    })
-                    st.dataframe(formatted_stats)
-                    
-                    st.subheader("Top 4 Eigenvectors")
-                    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-                    axes = axes.ravel()
-                    
-                    for i in range(4):
-                        sns.histplot(
-                            eigenvectors[:, i],
-                            bins=50,
-                            ax=axes[i],
-                            kde=True
-                        )
-                        axes[i].set_title(f'Eigenvector {i+1}')
-                        axes[i].set_xlabel('Normalized Entries')
-                        axes[i].set_ylabel('Frequency')
-                        axes[i].grid(True)
-                        
-                        moments_text = f'μ={np.mean(eigenvectors[:, i]):.3f}\nσ={np.std(eigenvectors[:, i]):.3f}\n'
-                        moments_text += f'Skew={stats.skew(eigenvectors[:, i]):.3f}\nKurt={stats.kurtosis(eigenvectors[:, i]):.3f}'
-                        axes[i].text(
-                            0.95, 0.95,
-                            moments_text,
-                            transform=axes[i].transAxes,
-                            verticalalignment='top',
-                            horizontalalignment='right',
-                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
-                        )
+                        for i in range(4):
+                            sns.histplot(
+                                eigenvectors[:, i],
+                                bins=50,
+                                ax=axes[i],
+                                kde=True
+                            )
+                            axes[i].set_title(f'Eigenvector {i+1}')
+                            axes[i].set_xlabel('Values')  
+                            axes[i].set_ylabel('Frequency')
+                            axes[i].grid(True)
+                            
+                            moments_text = f'μ={np.mean(eigenvectors[:, i]):.3f}\nσ={np.std(eigenvectors[:, i]):.3f}\n'
+                            moments_text += f'Skew={stats.skew(eigenvectors[:, i]):.3f}\nKurt={stats.kurtosis(eigenvectors[:, i]):.3f}'
+                            axes[i].text(
+                                0.95, 0.95,
+                                moments_text,
+                                transform=axes[i].transAxes,
+                                verticalalignment='top',
+                                horizontalalignment='right',
+                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+                            )
                     
                     plt.tight_layout()
                     st.pyplot(fig)
@@ -267,7 +255,7 @@ def main():
                     top_stocks_df = market_caps.head(num_stocks)
                     
                     fig, ax = plt.subplots(figsize=(12, 6))
-                    sns.histplot(data=top_stocks_df, x='DlyCap', bins=30, ax=ax)
+                    sns.histplot(data=top_stocks_df, x='DlyCap', bins=50, ax=ax)
                     ax.set_xlabel('Market Cap')
                     ax.set_ylabel('Count')
                     st.pyplot(fig)
