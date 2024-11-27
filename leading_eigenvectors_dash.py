@@ -8,7 +8,6 @@ import sqlite3
 import time
 from scipy import stats
 
-
 # Create indices if they don't exist
 @st.cache_resource  # This ensures we only try to create indices once per session
 def create_indices(db_path):
@@ -30,29 +29,30 @@ class MarketCapAnalyzer:
         self.dates = None
         self._load_dates()
     
-    @st.cache_data  # Cache the dates query
     def _load_dates(self):
-        """Load available dates from database with caching"""
+        """Load available dates from database"""
         with sqlite3.connect(self.db_path) as conn:
             self.dates = pd.read_sql_query(
                 "SELECT DISTINCT DlyCalDt FROM russell3000 ORDER BY DlyCalDt",
                 conn
             )['DlyCalDt'].tolist()
     
-    @staticmethod
-    @lru_cache(maxsize=32)  # Cache eigenvector stats calculations
-    def compute_eigenvector_stats_cached(eigenvector_tuple):
-        """Cached version of statistical computations"""
-        evec = np.array(eigenvector_tuple)
-        return {
-            'Mean': np.mean(evec),
-            'Std': np.std(evec),
-            'Skewness': stats.skew(evec),
-            'Kurtosis': stats.kurtosis(evec),
-            'Min': np.min(evec),
-            'Max': np.max(evec),
-            'Median': np.median(evec)
-        }
+    def compute_eigenvector_stats(self, eigenvectors):
+        """Compute statistical moments for eigenvectors"""
+        stats_data = []
+        for i in range(eigenvectors.shape[1]):
+            evec = eigenvectors[:, i]
+            stats_data.append({
+                'Eigenvector': f'EV{i+1}',
+                'Mean': np.mean(evec),
+                'Std': np.std(evec),
+                'Skewness': stats.skew(evec),
+                'Kurtosis': stats.kurtosis(evec),
+                'Min': np.min(evec),
+                'Max': np.max(evec),
+                'Median': np.median(evec)
+            })
+        return pd.DataFrame(stats_data)
             
     def get_window_data(self, end_date, lookback_days):
         """Get returns matrix for market cap ranked stocks"""
