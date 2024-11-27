@@ -9,19 +9,11 @@ import requests
 from io import BytesIO
 import matplotlib.pyplot as plt
 
-
-# Improve caching with proper hash funcs
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_parquet_from_github():
-    """
-    Loads a Parquet file from the same GitHub repository using a relative path.
-    """
-    # Assuming the parquet file is in the same directory as the script
     url = "r3000hist.parquet"
     try:
-        # Try to read locally first
         df = pd.read_parquet(url)
-        # Ensure data types are correct immediately after loading
         df['DlyCalDt'] = pd.to_datetime(df['DlyCalDt'])
         df['DlyRet'] = pd.to_numeric(df['DlyRet'], errors='coerce')
         df['DlyCap'] = pd.to_numeric(df['DlyCap'], errors='coerce')
